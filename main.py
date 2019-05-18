@@ -12,9 +12,8 @@ import pickle
 import numpy as np
 from scipy.sparse import lil_matrix
 from scipy.sparse import csr_matrix
-from scipy.sparse import diags
-from sparsesvd import sparsesvd
-from scipy.sparse.linalg import svds, eigs
+from sklearn.decomposition import TruncatedSVD
+
 
 class DocumentSplitter:
     def split_dump_to_documents(self, file_path):
@@ -161,16 +160,28 @@ class SearchEngine:
         # for i, el in enumerate(corr):
 
     def get_matrix_svd(self):
-        ut, s, vt = svds(self.A_matrix, min(self.A_matrix.shape)-1)
+        self.svd = TruncatedSVD(n_components=500)
+        self.svd.fit(self.A_matrix)
+        self.A_matrix_SVD = self.svd.transform(self.A_matrix)
+
         print('Got svd')
-        print('ut.T', ut.T.shape)
-        print('diags(s)', diags(s).shape)
-        print('vt', vt.shape)
-        self.A_matrix_SVD = ut.dot(csr_matrix(diags(s))).dot(vt)
+        print('Original shape', self.A_matrix.shape)
+        print('SVD shape', self.A_matrix_SVD.shape)
+
+        # print('ut.T', ut.T.shape)
+        # print('diags(s)', diags(s).shape)
+        # print('vt', vt.shape)
+        # self.A_matrix_SVD = ut.dot(csr_matrix(diags(s))).dot(vt)
+        # print('Computed SVD')
 
     def get_correlation_of_query_svd(self, query):
-        Q = self.parse_query_to_vec(query)
-        return Q.T.dot(self.A_matrix_SVD)
+        print(self.svd.components_.shape)
+        print(self.parse_query_to_vec(query).todense().shape)
+        Q_SVD = self.parse_query_to_vec(query).T.dot(self.A_matrix_SVD)
+        print(Q_SVD.shape)
+        res = Q_SVD.dot(self.svd.components_)
+        print(res.shape)
+        return res
 
     def get_best_matched_documents_svd(self, k, query):
         corr = self.get_correlation_of_query_svd(query)
@@ -197,11 +208,11 @@ if __name__ == '__main__':
     # search_engine.init_matrix()
 
     search_engine.get_best_matched_documents(10,
-                                             'freddie british singer aids queen')
+                                             'ministries of germany')
 
-    # search_engine.get_matrix_svd()
+    search_engine.get_matrix_svd()
 
-    # search_engine.get_best_matched_documents_svd(10,
-    #                                          'freddie british singer aids queen')
+    search_engine.get_best_matched_documents_svd(10,
+                                                 'ministries of germany')
 
     # print(search_engine.A_matrix_SVD)
