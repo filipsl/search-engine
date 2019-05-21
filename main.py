@@ -7,22 +7,32 @@ from stemming.porter2 import stem
 from datetime import datetime
 from collections import Counter
 from sklearn.preprocessing import normalize
+from itertools import groupby
 import pickle
 
 import numpy as np
 from scipy.sparse import lil_matrix
 from scipy.sparse import csr_matrix
 from sklearn.decomposition import TruncatedSVD
+import PySimpleGUI as sg
 
 
 class DocumentSplitter:
-    def split_dump_to_documents(self, file_path):
-        pass
+    def split_dump_to_documents(self, file_path, dir_path):
+        with open(file_path, 'r') as file:
+            text = file.readlines()
+        articles = [list(group) for key, group in groupby(text, lambda x: x == "\n") if not key]
+        for article in articles:
+            path = dir_path + article[0].strip().translate(str.maketrans('\\/', '__')) + '.txt'
+            with open(path, 'w+') as doc:
+                for line in article:
+                    doc.write(line)
 
 
 class SearchEngine:
     def __init__(self):
         # key - name of article : val - dictionary of dicts (word : frequency) for each document
+        # de facto sparse matrix A, but stored as a dictionary of dictionaries
         self.document_word_frequency_dicts = {}
         # key - word : number of occurrences in all documents
         self.word_all_occurrences_count = {}
@@ -40,6 +50,7 @@ class SearchEngine:
         self.k_most_common_words = 20000
         self.A_matrix = None
         self.A_matrix_SVD = None
+        self.svd = None
 
     def load_documents_from_dir(self, dir_path):
         for filename in os.listdir(dir_path):
@@ -99,16 +110,21 @@ class SearchEngine:
                                                        .most_common(self.k_most_common_words))
 
     def set_row_index_to_words(self):
+        self.word_row_index = {}
         for i, w in enumerate(self.word_all_occurrences_count_reduced):
             self.word_row_index[w] = i
 
     def set_column_index_to_documents(self):
+        self.document_column_index = {}
+        self.document_column_index_to_name = {}
         for i, d in enumerate(self.document_word_frequency_dicts):
             self.document_column_index[d] = i
             self.document_column_index_to_name[i] = d
 
     def init_matrix(self):
-        self.A_matrix = lil_matrix((self.k_most_common_words, self.loaded_documents_count), dtype=np.double)
+        self.A_matrix = lil_matrix((len(self.word_all_occurrences_count_reduced), self.loaded_documents_count),
+                                   dtype=np.double)
+        print('Initializing matrix of shape:', self.A_matrix.shape)
         i = 0
         for w in self.word_row_index:
             for d in self.document_column_index:
@@ -136,7 +152,7 @@ class SearchEngine:
         word_tokens_stemmed = [stem(w) for w in word_tokens_filtered]
         word_tokens_in_set = [w for w in word_tokens_stemmed if w in self.word_row_index]
 
-        Q = lil_matrix((self.k_most_common_words, 1), dtype=np.double)
+        Q = lil_matrix((len(self.word_all_occurrences_count_reduced), 1), dtype=np.double)
 
         for word in word_tokens_in_set:
             Q[self.word_row_index[word], 0] = 1
@@ -154,33 +170,26 @@ class SearchEngine:
         id_corr = [(i, corr[0, i]) for i in range(self.loaded_documents_count)]
         id_corr = sorted(id_corr, key=(lambda x: x[1]), reverse=True)
         id_corr = id_corr[:k]
+        print('\nregular search')
+        layout_results = []
         for i, el in enumerate(id_corr):
-            print(i, '.', self.document_column_index_to_name[el[0]], ' correlation: ', el[1] * 100)
-        # corr_with_doc = [(i, c) for c in corr and i in range(10)]
-        # for i, el in enumerate(corr):
+            article_name = self.document_column_index_to_name[el[0]].replace('../data/', '').replace('.txt', '')
+            correlation = el[1] * 100
+            hex_red = str(hex(int(correlation * 2.55))).replace('0x', '').upper()
+            hex_red = '0' + hex_red if len(hex_red) == 1 else hex_red
+            layout_results.append([sg.Button(article_name, button_color=(
+                'black', '#' + hex_red + '7F7F')),
+                                   sg.Text(str(correlation))])
+        return layout_results
 
     def get_matrix_svd(self):
-        self.svd = TruncatedSVD(n_components=500)
+        self.svd = TruncatedSVD(n_components=250)
         self.svd.fit(self.A_matrix)
         self.A_matrix_SVD = self.svd.transform(self.A_matrix)
 
-        print('Got svd')
-        print('Original shape', self.A_matrix.shape)
-        print('SVD shape', self.A_matrix_SVD.shape)
-
-        # print('ut.T', ut.T.shape)
-        # print('diags(s)', diags(s).shape)
-        # print('vt', vt.shape)
-        # self.A_matrix_SVD = ut.dot(csr_matrix(diags(s))).dot(vt)
-        # print('Computed SVD')
-
     def get_correlation_of_query_svd(self, query):
-        print(self.svd.components_.shape)
-        print(self.parse_query_to_vec(query).todense().shape)
         Q_SVD = self.parse_query_to_vec(query).T.dot(self.A_matrix_SVD)
-        print(Q_SVD.shape)
         res = Q_SVD.dot(self.svd.components_)
-        print(res.shape)
         return res
 
     def get_best_matched_documents_svd(self, k, query):
@@ -188,31 +197,65 @@ class SearchEngine:
         id_corr = [(i, corr[0, i]) for i in range(self.loaded_documents_count)]
         id_corr = sorted(id_corr, key=(lambda x: x[1]), reverse=True)
         id_corr = id_corr[:k]
+        print('\nSVD search')
+        layout_results = []
         for i, el in enumerate(id_corr):
-            print(i, '.', self.document_column_index_to_name[el[0]], ' correlation: ', el[1] * 100)
+            article_name = self.document_column_index_to_name[el[0]].replace('../data/', '').replace('.txt', '')
+            correlation = el[1] * 100
+            hex_red = str(hex(int(correlation * 2.55))).replace('0x', '').upper()
+            hex_red = '0' + hex_red if len(hex_red) == 1 else hex_red
+            layout_results.append([sg.Button(article_name, button_color=(
+                'black', '#' + hex_red + '7F7F')),
+                                   sg.Text(str(correlation))])
+        return layout_results
 
 
 if __name__ == '__main__':
+
+    doc_splitter = DocumentSplitter()
+    # doc_splitter.split_dump_to_documents('example.txt', './example_dir/')
+    # doc_splitter.split_dump_to_documents('corpus.txt', './data/')
+
     search_engine = SearchEngine()
     # search_engine.load_documents_from_dir('../data_test')
     # search_engine.load_documents_from_dir('../data')
 
-    search_engine.load_all_dicts('obj')
-    # print(len(search_engine.word_all_occurrences_count))
     # search_engine.reduce_bag_of_words()
-    # print(len(search_engine.word_all_occurrences_count_reduced))
+    # search_engine.word_all_occurrences_count_reduced = search_engine.word_all_occurrences_count
 
     # search_engine.set_row_index_to_words()
     # search_engine.set_column_index_to_documents()
     #
     # search_engine.init_matrix()
+    # search_engine.get_matrix_svd()
 
-    search_engine.get_best_matched_documents(10,
-                                             'ministries of germany')
+    # search_engine.load_all_dicts('obj_reduced_20k')
+    search_engine.load_all_dicts('obj')
 
-    search_engine.get_matrix_svd()
+    while True:
+        svd_button = sg.Checkbox('With SVD', default=False)
+        layout = [[sg.Image(filename='loupe.png')],  # Icon made by Freepik from www.flaticon.com
+                  [sg.Text('Enter query below')],
+                  [sg.Input(do_not_clear=True)],
+                  [svd_button],
+                  [sg.Button('Search',
+                             button_color=('black', '#FFFFFF')),
+                   sg.Exit()]]
 
-    search_engine.get_best_matched_documents_svd(10,
-                                                 'ministries of germany')
-
-    # print(search_engine.A_matrix_SVD)
+        query_window = sg.Window('SVD Search Engine').Layout(layout)
+        event, query = query_window.Read()
+        query = query[0]
+        svd_button_state = svd_button.Get()
+        query_window.Close()
+        if event is 'Exit' or event is None:
+            break
+        else:
+            if svd_button_state:
+                layout_results = search_engine.get_best_matched_documents_svd(10, query)
+            else:
+                layout_results = search_engine.get_best_matched_documents(10, query)
+            results_window = sg.Window('Results').Layout(layout_results)
+            event_res = results_window.Read()
+            if event_res[0] is not None:
+                with open('../data/' + event_res[0] + '.txt', 'r') as file:
+                    sg.Popup(event_res[0], file.read(), line_width=200)
